@@ -53,20 +53,17 @@ jobs:
           name: webgoat-sbom
           path: target/bom.json
 
-      - name: Scan SBOM with Grype
-        id: grype
-        uses: anchore/scan-action@v7
-        with:
-          sbom: target/bom.json
-          fail-build: false
-          output-format: json
-          output-file: grype-report.json
-          severity-cutoff: critical
-
-      - name: Create Grype table report
+      - name: Install Grype
         run: |
-          curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Verify Grype installation
+        run: grype version
+
+      - name: Scan SBOM with Grype
+        run: |
           grype sbom:target/bom.json -o table > grype-table.txt
+          grype sbom:target/bom.json -o json > grype-report.json
 
       - name: Show Grype table
         run: cat grype-table.txt
@@ -99,7 +96,20 @@ jobs:
 
       - name: Run Snyk Code SAST
         continue-on-error: true
-        run: snyk code test --sarif-file-output=snyk-code.sarif
+        run: |
+          snyk code test --json > snyk-code-report.json || true
+          snyk code test --sarif-file-output=snyk-code.sarif || true
+
+      - name: Show Snyk results in CLI
+        if: always()
+        run: |
+          cat snyk-code-report.json || true
+
+      - name: Show summarized Snyk findings
+        if: always()
+        run: |
+          jq '.runs[0].tool.driver.name' snyk-code.sarif || true
+          jq '.runs[0].results[] | {ruleId: .ruleId, level: .level, message: .message.text}' snyk-code.sarif || true
 
       - name: Upload Snyk SARIF to GitHub Code Scanning
         if: always()
@@ -113,6 +123,13 @@ jobs:
         with:
           name: snyk-code-sarif
           path: snyk-code.sarif
+
+      - name: Upload Snyk JSON artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-code-report
+          path: snyk-code-report.json
 
       - name: Fail pipeline on Critical vulnerabilities in Grype
         run: |
