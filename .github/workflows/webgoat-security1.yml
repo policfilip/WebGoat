@@ -65,12 +65,34 @@ jobs:
           grype sbom:target/bom.json -o table > grype-table.txt
           grype sbom:target/bom.json -o json > grype-report.json
 
-      - name: Show Grype table
-        run: cat grype-table.txt
-
-      - name: Show CVE IDs from Grype report
+          - name: Show Grype table with mapped CVEs
         run: |
-          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq || true
+          jq -r '
+            [
+              "PACKAGE | VERSION | GHSA/CVE | CVE | SEVERITY | FIXED IN",
+              "--------------------------------------------------------------------------------"
+            ],
+            (
+              .matches[]
+              | [
+                  .artifact.name,
+                  .artifact.version,
+                  .vulnerability.id,
+                  (
+                    [
+                      .vulnerability.id,
+                      (.vulnerability.relatedVulnerabilities[]?.id)
+                    ]
+                    | flatten
+                    | map(select(test("^CVE-")))
+                    | .[0]
+                  ) // "N/A",
+                  .vulnerability.severity,
+                  (.vulnerability.fix.versions[0] // "none")
+                ]
+              | join(" | ")
+            )
+          ' grype-report.json | head -n 100
 
       - name: Upload Grype JSON artifact
         if: always()
