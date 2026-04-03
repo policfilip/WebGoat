@@ -62,21 +62,21 @@ jobs:
 
       - name: Scan SBOM with Grype
         run: |
-          grype sbom:target/bom.json -o table > grype-table.txt
           grype sbom:target/bom.json -o json > grype-report.json
 
-          - name: Show Grype table with mapped CVEs
+      - name: Show Grype table with CVE column
         run: |
           jq -r '
             [
-              "PACKAGE | VERSION | GHSA/CVE | CVE | SEVERITY | FIXED IN",
-              "--------------------------------------------------------------------------------"
+              "PACKAGE | VERSION | TYPE | VULNERABILITY | CVE | SEVERITY | FIXED IN",
+              "------------------------------------------------------------------------------------------------"
             ],
             (
               .matches[]
               | [
                   .artifact.name,
                   .artifact.version,
+                  .artifact.type,
                   .vulnerability.id,
                   (
                     [
@@ -100,13 +100,6 @@ jobs:
         with:
           name: grype-report
           path: grype-report.json
-
-      - name: Upload Grype table artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: grype-table
-          path: grype-table.txt
 
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@master
