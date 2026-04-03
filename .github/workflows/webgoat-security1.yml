@@ -62,50 +62,15 @@ jobs:
 
       - name: Scan SBOM with Grype
         run: |
+          grype sbom:target/bom.json -o table > grype-table.txt
           grype sbom:target/bom.json -o json > grype-report.json
 
-      - name: Show Grype table with CVEs
-        run: |
-          jq -r '
-            [
-              "PACKAGE | VERSION | CVE | SEVERITY | FIXED IN",
-              "--------------------------------------------------------------------------------"
-            ],
-            (
-              .matches[]
-              | [
-                  .artifact.name,
-                  .artifact.version,
-                  (
-                    [
-                      .vulnerability.id,
-                      (.vulnerability.relatedVulnerabilities[]?.id)
-                    ]
-                    | flatten
-                    | map(select(test("^CVE-")))
-                    | .[0]
-                  ) // "N/A",
-                  .vulnerability.severity,
-                  (
-                    .vulnerability.fix.versions[0] // "none"
-                  )
-                ]
-              | join(" | ")
-            )
-          ' grype-report.json
+      - name: Show Grype table
+        run: cat grype-table.txt
 
-      - name: Show all CVE IDs from Grype report
+      - name: Show CVE IDs from Grype report
         run: |
-          jq -r '
-            .matches[]
-            | [
-                .vulnerability.id,
-                (.vulnerability.relatedVulnerabilities[]?.id)
-              ]
-            | flatten
-            | .[]
-            | select(test("^CVE-"))
-          ' grype-report.json | sort -u || true
+          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq || true
 
       - name: Upload Grype JSON artifact
         if: always()
@@ -113,6 +78,13 @@ jobs:
         with:
           name: grype-report
           path: grype-report.json
+
+      - name: Upload Grype table artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-table
+          path: grype-table.txt
 
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@master
