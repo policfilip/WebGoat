@@ -79,13 +79,16 @@ jobs:
                   .artifact.type,
                   .vulnerability.id,
                   (
-                    [
-                      .vulnerability.id,
-                      (.vulnerability.relatedVulnerabilities[]?.id)
-                    ]
-                    | flatten
-                    | map(select(test("^CVE-")))
-                    | .[0]
+                    if (.vulnerability.id | test("^CVE-")) then
+                      .vulnerability.id
+                    else
+                      (
+                        .relatedVulnerabilities[]?.id,
+                        .vulnerability.relatedVulnerabilities[]?.id
+                      )
+                      | select(test("^CVE-"))
+                      | first
+                    end
                   ) // "N/A",
                   .vulnerability.severity,
                   (.vulnerability.fix.versions[0] // "none")
