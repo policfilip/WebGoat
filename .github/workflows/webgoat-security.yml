@@ -1,0 +1,137 @@
+name: WebGoat Security Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  webgoat-security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Verify Maven
+        run: mvn -version
+
+      - name: Build WebGoat
+        run: mvn clean verify -DskipTests
+
+      - name: Generate SBOM (CycloneDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: webgoat-sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webgoat-sbom
+          path: webgoat-sbom.cdx.json
+
+      - name: Scan SBOM with Grype
+        id: grype_scan
+        uses: anchore/scan-action@v7
+        with:
+          sbom: webgoat-sbom.cdx.json
+          fail-build: false
+          output-format: json
+          output-file: grype-report.json
+          severity-cutoff: critical
+
+      - name: Upload Grype report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-report
+          path: grype-report.json
+
+      - name: Set up Python for Semgrep
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Semgrep
+        run: python -m pip install --upgrade pip semgrep
+
+      - name: Run Semgrep SAST
+        run: |
+          semgrep scan \
+            --config auto \
+            --json \
+            --output semgrep-report.json \
+            .
+
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+      - name: Enforce policy - fail on CRITICAL or CVSS >= 9.0
+        run: |
+          python << 'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report_path = Path("grype-report.json")
+          if not report_path.exists():
+              print("grype-report.json not found")
+              sys.exit(1)
+
+          data = json.loads(report_path.read_text(encoding="utf-8"))
+
+          hits = []
+
+          for match in data.get("matches", []):
+              vuln = match.get("vulnerability", {}) or {}
+              artifact = match.get("artifact", {}) or {}
+
+              vuln_id = vuln.get("id", "UNKNOWN")
+              severity = str(vuln.get("severity", "UNKNOWN")).upper()
+              pkg_name = artifact.get("name", "UNKNOWN")
+
+              max_score = None
+              for cvss in vuln.get("cvss", []) or []:
+                  metrics = cvss.get("metrics", {}) or {}
+                  score = metrics.get("baseScore")
+                  try:
+                      if score is not None:
+                          score = float(score)
+                          if max_score is None or score > max_score:
+                              max_score = score
+                  except Exception:
+                      pass
+
+              if severity == "CRITICAL" or (max_score is not None and max_score >= 9.0):
+                  hits.append({
+                      "id": vuln_id,
+                      "package": pkg_name,
+                      "severity": severity,
+                      "cvss": max_score
+                  })
+
+          if hits:
+              print("Policy violation detected:")
+              for h in hits:
+                  print(f"- {h['id']} | package={h['package']} | severity={h['severity']} | cvss={h['cvss']}")
+              sys.exit(1)
+
+          print("No CRITICAL or CVSS >= 9.0 vulnerabilities found.")
+          PY
