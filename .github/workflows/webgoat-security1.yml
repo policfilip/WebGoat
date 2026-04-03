@@ -2,11 +2,9 @@ name: WebGoat Full Security Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -29,23 +27,11 @@ jobs:
           check-latest: true
           cache: maven
 
-      - name: Verify Java
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
-          javac -version
-
-      - name: Verify Maven
-        run: mvn -version
-
       - name: Build WebGoat
         run: mvn clean package -DskipTests
 
-      - name: Generate SBOM (CycloneDX JSON)
+      - name: Generate SBOM
         run: mvn org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeAggregateBom
-
-      - name: Show generated files
-        run: find . -name "*.json" -o -name "*.sarif" -o -name "*.txt"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
@@ -54,37 +40,45 @@ jobs:
           path: target/bom.json
 
       - name: Install Grype
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-      - name: Verify Grype installation
-        run: grype version
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Scan SBOM with Grype
+        run: grype sbom:target/bom.json -o json > grype-report.json
+
+      - name: Show Grype results with CVEs
         run: |
-          grype sbom:target/bom.json -o table > grype-table.txt
-          grype sbom:target/bom.json -o json > grype-report.json
+          jq -r '
+            [
+              "PACKAGE | VERSION | CVE | SEVERITY | FIXED IN",
+              "------------------------------------------------------------------------"
+            ],
+            (
+              .matches[]
+              | [
+                  .artifact.name,
+                  .artifact.version,
+                  (
+                    [
+                      .vulnerability.id,
+                      (.vulnerability.relatedVulnerabilities[]?.id)
+                    ]
+                    | flatten
+                    | map(select(test("^CVE-")))
+                    | .[0]
+                  ) // "N/A",
+                  .vulnerability.severity,
+                  (.vulnerability.fix.versions[0] // "none")
+                ]
+              | join(" | ")
+            )
+          ' grype-report.json | head -n 60
 
-      - name: Show Grype table
-        run: cat grype-table.txt
-
-      - name: Show CVE IDs from Grype report
-        run: |
-          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq || true
-
-      - name: Upload Grype JSON artifact
+      - name: Upload Grype artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: grype-report
           path: grype-report.json
-
-      - name: Upload Grype table artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: grype-table
-          path: grype-table.txt
 
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@master
@@ -100,38 +94,41 @@ jobs:
           snyk code test --json > snyk-code-report.json || true
           snyk code test --sarif-file-output=snyk-code.sarif || true
 
-      - name: Show Snyk results in CLI
+      - name: Show Snyk results
         if: always()
         run: |
-          cat snyk-code-report.json || true
+          jq -r '
+            [
+              "RULE | SEVERITY | FILE",
+              "-------------------------------------------------------------"
+            ],
+            (
+              .runs[0].results[]?
+              | [
+                  .ruleId,
+                  (.level // "unknown"),
+                  (.locations[0].physicalLocation.artifactLocation.uri // "n/a")
+                ]
+              | join(" | ")
+            )
+          ' snyk-code.sarif | head -n 60
 
-      - name: Show summarized Snyk findings
-        if: always()
-        run: |
-          jq '.runs[0].tool.driver.name' snyk-code.sarif || true
-          jq '.runs[0].results[] | {ruleId: .ruleId, level: .level, message: .message.text}' snyk-code.sarif || true
-
-      - name: Upload Snyk SARIF to GitHub Code Scanning
+      - name: Upload Snyk SARIF to Code Scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-code.sarif
 
-      - name: Upload Snyk SARIF artifact
+      - name: Upload Snyk artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: snyk-code-sarif
-          path: snyk-code.sarif
+          name: snyk-results
+          path: |
+            snyk-code.sarif
+            snyk-code-report.json
 
-      - name: Upload Snyk JSON artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: snyk-code-report
-          path: snyk-code-report.json
-
-      - name: Fail pipeline on Critical vulnerabilities in Grype
+      - name: Fail pipeline on Critical Grype findings
         run: |
           if grep -q '"severity":"Critical"' grype-report.json; then
             echo "Critical vulnerabilities found!"
