@@ -52,10 +52,40 @@ jobs:
 
       - name: Scan SBOM with Grype
         run: |
-          grype sbom:target/bom.json -o table
+          grype sbom:target/bom.json -o table > grype-table.txt
           grype sbom:target/bom.json -o json > grype-report.json
 
-      - name: Upload Grype report
+      - name: Show Grype table
+        run: cat grype-table.txt
+
+      - name: Show CVE IDs from report
+        run: |
+          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq
+
+      - name: Show vulnerability details with CVEs
+        run: |
+          jq '.matches[] | {
+            package: .artifact.name,
+            version: .artifact.version,
+            vulnerability: .vulnerability.id,
+            severity: .vulnerability.severity,
+            datasource: .vulnerability.dataSource
+          }' grype-report.json
+
+      - name: Fail pipeline on Critical vulnerabilities
+        run: |
+          if grep -q '"severity":"Critical"' grype-report.json; then
+            echo "Critical vulnerabilities found!"
+            exit 1
+          fi
+
+      - name: Upload Grype table artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-table
+          path: grype-table.txt
+
+      - name: Upload Grype report artifact
         uses: actions/upload-artifact@v4
         with:
           name: grype-report
