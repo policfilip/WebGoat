@@ -4,14 +4,9 @@ on:
   push:
     branches:
       - main
-      - master
-      - develop
   pull_request:
     branches:
       - main
-      - master
-      - develop
-  workflow_dispatch:
 
 jobs:
   webgoat-security:
@@ -24,35 +19,74 @@ jobs:
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '25'
-          check-latest: true
-          cache: maven
 
       - name: Verify Java version
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
-          javac -version
+        run: java -version
 
       - name: Verify Maven version
         run: mvn -version
 
       - name: Build WebGoat
-        run: mvn clean compile -DskipTests
+        run: mvn clean package -DskipTests
 
       - name: Generate SBOM (CycloneDX JSON)
-        uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: webgoat-sbom.cdx.json
+        run: mvn org.cyclonedx:cyclonedx-maven-plugin:2.7.9:makeAggregateBom
 
       - name: Show generated files
-        run: ls -lah
+        run: find . -name "*.json"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: webgoat-sbom
-          path: webgoat-sbom.cdx.json
+          path: target/bom.json
+
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Verify Grype installation
+        run: grype version
+
+      - name: Scan SBOM with Grype
+        run: |
+          grype sbom:target/bom.json -o table > grype-table.txt
+          grype sbom:target/bom.json -o json > grype-report.json
+
+      - name: Show Grype table
+        run: cat grype-table.txt
+
+      - name: Show CVE IDs from report
+        run: |
+          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq
+
+      - name: Show vulnerability details with CVEs
+        run: |
+          jq '.matches[] | {
+            package: .artifact.name,
+            version: .artifact.version,
+            vulnerability: .vulnerability.id,
+            severity: .vulnerability.severity,
+            datasource: .vulnerability.dataSource
+          }' grype-report.json
+
+      - name: Fail pipeline on Critical vulnerabilities
+        run: |
+          if grep -q '"severity":"Critical"' grype-report.json; then
+            echo "Critical vulnerabilities found!"
+            exit 1
+          fi
+
+      - name: Upload Grype table artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-table
+          path: grype-table.txt
+
+      - name: Upload Grype report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-report
+          path: grype-report.json
