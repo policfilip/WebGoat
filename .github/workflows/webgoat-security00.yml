@@ -1,0 +1,32 @@
+name: WebGoat Security Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  webgoat-security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Verify Java
+        run: java -version
+
+      - name: Verify Maven
+        run: mvn -version
+
+      - name: Build WebGoat
+        run: mvn clean compile -DskipTests
