@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   webgoat-security:
@@ -19,11 +20,16 @@ jobs:
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '25'
+          check-latest: true
+          cache: maven
 
       - name: Verify Java version
-        run: java -version
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          javac -version
 
       - name: Verify Maven version
         run: mvn -version
@@ -35,7 +41,7 @@ jobs:
         run: mvn org.cyclonedx:cyclonedx-maven-plugin:2.7.9:makeAggregateBom
 
       - name: Show generated files
-        run: find . -name "*.json"
+        run: find . -name "*.json" -o -name "*.txt"
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
@@ -60,33 +66,38 @@ jobs:
 
       - name: Show CVE IDs from report
         run: |
-          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq
+          grep -o 'CVE-[0-9]\{4\}-[0-9]\+' grype-report.json | sort | uniq || true
 
-      - name: Show vulnerability details with CVEs
+      - name: Show vulnerability details
         run: |
           jq '.matches[] | {
             package: .artifact.name,
             version: .artifact.version,
             vulnerability: .vulnerability.id,
             severity: .vulnerability.severity,
-            datasource: .vulnerability.dataSource
-          }' grype-report.json
-
-      - name: Fail pipeline on Critical vulnerabilities
-        run: |
-          if grep -q '"severity":"Critical"' grype-report.json; then
-            echo "Critical vulnerabilities found!"
-            exit 1
-          fi
+            fix_versions: .vulnerability.fix.versions,
+            data_source: .vulnerability.dataSource
+          }' grype-report.json || true
 
       - name: Upload Grype table artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: grype-table
           path: grype-table.txt
 
       - name: Upload Grype report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: grype-report
           path: grype-report.json
+
+      - name: Fail pipeline on Critical vulnerabilities
+        run: |
+          if grep -q '"severity":"Critical"' grype-report.json; then
+            echo "Critical vulnerabilities found!"
+            exit 1
+          else
+            echo "No Critical vulnerabilities found."
+          fi
